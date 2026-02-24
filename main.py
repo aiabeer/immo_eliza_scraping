@@ -1,165 +1,250 @@
-# importing the libraries
 import requests
+import csv
+import time
 from selenium import webdriver
+from selenium.common import ElementClickInterceptedException, TimeoutException
 from selenium.webdriver.common.by import By
+from selenium.webdriver.chrome.service import Service
+from webdriver_manager.chrome import ChromeDriverManager
 from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
-from selenium.webdriver.chrome.options import Options
-from bs4 import BeautifulSoup
-import time
-import random
-# import pandas as pd
+import re
 
-url = "https://immovlan.be/en/real-estate/house/for-sale?province=limburg&page=1"
-MAX_PAGES = None
-
-# Create Chrome options for headless browsing
-chrome_options = Options()
-chrome_options.add_argument("--headless")  # Run in headless mode
-chrome_options.add_argument("--no-sandbox")  # Often needed in Linux environments
-chrome_options.add_argument("--disable-dev-shm-usage")  # Overcome limited resources
-
-# Create driver with these options
-driver = webdriver.Chrome(options=chrome_options)
-driver.get(url)
-wait = WebDriverWait(driver, 10)
-
-# Set the cookie_url variable (1 line)
-cookie_url = root_=url + '/cookie'
-
-# Query the enpoint, set the cookies variable and display it (2 lines)
-cookies = requests.get(cookie_url).cookies
-print(cookies)
-
-
+main_url = "https://immovlan.be/en/real-estate?transactiontypes=for-sale&propertytypes=house,apartment&propertysubtypes=residence,villa,mixed-building,master-house,cottage,bungalow,chalet,mansion,apartment,penthouse,ground-floor,duplex,studio,loft,triplex"
 
 
 """
-what we need to scrape from the website: villa:
-	•	Locality Uccle
-    <font dir="auto" style="vertical-align: inherit;">- Uccle </font>
+urls: 
 
-	•	Type of property (House/apartment):  House
-    <font dir="auto" style="vertical-align: inherit;">
-                    House for rent </font>
-
-	•	Subtype of property (Bungalow, Chalet, Mansion, ...): Entire home
-    <font dir="auto" style="vertical-align: inherit;">
-            Entire home. Between the Observatory and Uccle train station, in a residential area close to shops and public transport: superb furnished villa on 4 levels in the middle of a 12-acre south-facing green plot, comprising 5 bedrooms ranging from 20 to 40 m2, workspaces, indoor pool and wellness area, terraces and garden. Outdoor parking for 3-4 cars.
-            </font>
-
-	•	Price: 20000€/month
-    <font dir="auto" style="vertical-align: inherit;">€20,000
-                        </font>
-
-	•	Type of sale (Exclusion of life sales): Rent
-    <font dir="auto" style="vertical-align: inherit;">
-                    House for rent </font>
-
-	•	Number of rooms: 5 bedrooms 
-        from discription
-
-	•	Living Area: no exact data 
-
-	•	Fully equipped kitchen (Yes/No): Because it is Furneshed it is yes
-    <font dir="auto" style="vertical-align: inherit;">Furniture</font>
-
-
-	•	Furnished (Yes/No): Yes
-    <font dir="auto" style="vertical-align: inherit;">Furniture</font>
-
-	•	Open fire (Yes/No): No fire no information 
-
-	•	Terrace (Yes/No): Yes
-    <font dir="auto" style="vertical-align: inherit;">Yes</font>
-
-    ◦	If yes: Area: no information
-
-	•	Garden (Yes/No): Yes
-    <div>
-                                <h4><font dir="auto" style="vertical-align: inherit;"><font dir="auto" style="vertical-align: inherit;">Garden</font></font></h4>
-                                <p><font dir="auto" style="vertical-align: inherit;"><font dir="auto" style="vertical-align: inherit;">Yes</font></font></p>
-                            </div>
-
-	◦	If yes: Area: no information
-	•	Surface of the land: 480 
-    <font dir="auto" style="vertical-align: inherit;">480 m²</font>
-
-	•	Surface area of the plot of land: 12-acre convert to m2 = 48561.6 m2
-    the area of total floors 
-
-	•	Number of facades: no information
-
-	•	Swimming pool (Yes/No): Yes 
-    <font dir="auto" style="vertical-align: inherit;">Outdoor pool</font> 
-
-	•	State of the building (New, to be renovated, ...): no information
+appartment for rent: https://immovlan.be/en/real-estate?transactiontypes=for-rent&propertytypes=apartment&propertysubtypes=apartment,duplex,studio,ground-floor,penthouse,triplex,loft&noindex=1
+appartment for sale: https://immovlan.be/en/real-estate?transactiontypes=for-sale&propertytypes=apartment&propertysubtypes=apartment,duplex,studio,ground-floor,penthouse,triplex,loft&noindex=1
 
 """
 
-"""
-what we need to scrape from the website:
-	•	Locality 1000 Brussels 
-    <font dir="auto" style="vertical-align: inherit;">1000 Brussels</font>
+def accept_cookies(driver):
+    """Accept cookies using the provided driver instance."""
+    try:
+        wait = WebDriverWait(driver, 1)
+        accept_button = wait.until(
+            EC.element_to_be_clickable((By.ID, "didomi-notice-agree-button"))
+        )
+        accept_button.click()
+        print("Cookies accepted (normal click)")
+    except TimeoutException:
+        print("Cookie button not found – may already be accepted or not present.")
+    except ElementClickInterceptedException:
+        # Fallback to JavaScript click
+        print("Normal click intercepted – trying JavaScript click")
+        driver.execute_script("arguments[0].click();", accept_button)
+        print("Cookies accepted (JavaScript click)")
+    time.sleep(2)  # let popup disappear
 
-	•	Type of property (House/apartment) Apartment
-    <font dir="auto" style="vertical-align: inherit;">
-                    Apartment for rent </font>
+def fetch_all_links(base_url, max_pages=50):
+    """
+    Scrape property links from all pages up to max_pages (if provided).
+    If max_pages is None, scrape until no more pages are found.
+    """
+    driver = webdriver.Chrome(service=Service(ChromeDriverManager().install()))
+    all_links = []
+    page = 1
 
-	•	Subtype of property (Bungalow, Chalet, Mansion, ...): penthouse
+    while True:
+        # Stop if we've reached the maximum page limit
+        if max_pages is not None and page > max_pages:
+            print(f"Reached maximum page limit ({max_pages}). Stopping.")
+            break
 
-<font dir="auto" style="vertical-align: inherit;">
-            Discover this exceptional 540m² penthouse (according to the Energy Performance Certificate), available for immediate occupancy after a complete renovation by Claire Bataille. The main entrance to the apartment is in the reception hall, which leads to the formal dining room, cloakroom, and guest toilet. On one side, you'll find the large, fully equipped kitchen with Miele appliances, a pantry, and a staff toilet. A family room with a gas fireplace, TV, and sound system adjoins this part of the apartment. On the other side, a large reception room with a small bar area for aperitifs opens onto a first southwest-facing terrace with views of the Bois de la Cambre. Two bedrooms are also located on this floor, each with its own bathroom, toilet, and dressing room. Marble, solid Macassar ebony, and patinated metals are used throughout the bedrooms. On the upper floor, a second living room with a separate kitchenette provides access to a second terrace, which offers even more expansive views of the Bois de la Cambre trees. A guest toilet and storage areas complete this reception area. A third bedroom and a walk-in closet offering over 40 linear meters of storage space complete the apartment's layout. Air conditioning, home automation, an integrated sound system, and exceptional natural materials are features found throughout the apartment; nothing has been left to chance. A cellar, laundry room, wine cellar, and triple garage are included in the rental. An au pair apartment is available as an option in the basement. Energy Performance Certificate (EPC) rating: C. A monthly provision of €2,000 covers the maintenance of common areas and grounds, concierge services, and hot water and heating. Available immediately!
-            </font>
+        # Construct URL for current page
+        if page == 1:
+            url = base_url
+        else:
+            # Add page parameter (assuming the site uses &page=)
+            if '?' in base_url:
+                url = f"{base_url}&page={page}"
+            else:
+                url = f"{base_url}?page={page}"
+
+        print(f"Navigating to page {page}: {url}")
+        driver.get(url)
+
+        # Accept cookies (in case popup reappears)
+        accept_cookies(driver)
+
+        # Wait for property cards to load
+        try:
+            WebDriverWait(driver, 1).until(
+                EC.presence_of_element_located((By.CLASS_NAME, "list-view-item"))
+            )
+        except TimeoutException:
+            print(f"No property cards found on page {page}. Stopping.")
+            break
+
+        # Extract links from current page
+        cards = driver.find_elements(By.CLASS_NAME, "list-view-item")
+        if not cards:
+            print(f"No cards on page {page}. Stopping.")
+            break
+
+        page_links = []
+        for card in cards:
+            link = card.get_attribute("data-url")
+            if link:
+                page_links.append(link)
+
+        print(f"Page {page}: found {len(page_links)} links")
+        all_links.extend(page_links)
+
+        # Check if there is a "Next" button to determine if more pages exist
+        try:
+            # Look for a clickable next button (adjust selector if needed)
+            next_button = driver.find_element(
+                By.XPATH,
+                "//a[contains(text(),'Next')] | //a[contains(@rel,'next')] | //li[contains(@class,'next')]/a[not(contains(@class,'disabled'))]"
+            )
     
-	•	Price: 9000€/month
-    <font dir="auto" style="vertical-align: inherit;">€9,000
-                        </font>
+            # The presence of a next button confirms that page+1 should exist.
+        except:
+            print("No 'Next' button found – assuming last page.")
+            break
 
-	•	Type of sale (Exclusion of life sales): Rent
-    <font dir="auto" style="vertical-align: inherit;">
-                    Apartment for rent </font>
+        page += 1
+        time.sleep(1)  # polite delay
 
-	•	Number of rooms: 2
-    <font dir="auto" style="vertical-align: inherit;">Number of bedrooms</font>
-
-	•	Living Area: 540 
-    <font dir="auto" style="vertical-align: inherit;">Living area</font>
-
-	•	Fully equipped kitchen (Yes/No): Yes
-    <font dir="auto" style="vertical-align: inherit;">
-            Discover this exceptional 540m² penthouse (according to the Energy Performance Certificate), available for immediate occupancy after a complete renovation by Claire Bataille. The main entrance to the apartment is in the reception hall, which leads to the formal dining room, cloakroom, and guest toilet. On one side, you'll find the large, fully equipped kitchen with Miele appliances, a pantry, and a staff toilet. A family room with a gas fireplace, TV, and sound system adjoins this part of the apartment. On the other side, a large reception room with a small bar area for aperitifs opens onto a first southwest-facing terrace with views of the Bois de la Cambre. Two bedrooms are also located on this floor, each with its own bathroom, toilet, and dressing room. Marble, solid Macassar ebony, and patinated metals are used throughout the bedrooms. On the upper floor, a second living room with a separate kitchenette provides access to a second terrace, which offers even more expansive views of the Bois de la Cambre trees. A guest toilet and storage areas complete this reception area. A third bedroom and a walk-in closet offering over 40 linear meters of storage space complete the apartment's layout. Air conditioning, home automation, an integrated sound system, and exceptional natural materials are features found throughout the apartment; nothing has been left to chance. A cellar, laundry room, wine cellar, and triple garage are included in the rental. An au pair apartment is available as an option in the basement. Energy Performance Certificate (EPC) rating: C. A monthly provision of €2,000 covers the maintenance of common areas and grounds, concierge services, and hot water and heating. Available immediately!
-            </font>
-
-	•	Furnished (Yes/No): YEs
-    <font dir="auto" style="vertical-align: inherit;">
-            Discover this exceptional 540m² penthouse (according to the Energy Performance Certificate), available for immediate occupancy after a complete renovation by Claire Bataille. The main entrance to the apartment is in the reception hall, which leads to the formal dining room, cloakroom, and guest toilet. On one side, you'll find the large, fully equipped kitchen with Miele appliances, a pantry, and a staff toilet. A family room with a gas fireplace, TV, and sound system adjoins this part of the apartment. On the other side, a large reception room with a small bar area for aperitifs opens onto a first southwest-facing terrace with views of the Bois de la Cambre. Two bedrooms are also located on this floor, each with its own bathroom, toilet, and dressing room. Marble, solid Macassar ebony, and patinated metals are used throughout the bedrooms. On the upper floor, a second living room with a separate kitchenette provides access to a second terrace, which offers even more expansive views of the Bois de la Cambre trees. A guest toilet and storage areas complete this reception area. A third bedroom and a walk-in closet offering over 40 linear meters of storage space complete the apartment's layout. Air conditioning, home automation, an integrated sound system, and exceptional natural materials are features found throughout the apartment; nothing has been left to chance. A cellar, laundry room, wine cellar, and triple garage are included in the rental. An au pair apartment is available as an option in the basement. Energy Performance Certificate (EPC) rating: C. A monthly provision of €2,000 covers the maintenance of common areas and grounds, concierge services, and hot water and heating. Available immediately!
-            </font>
+    driver.quit()
+    return all_links
 
 
-	•	Open fire (Yes/No): yes 
-    <font dir="auto" style="vertical-align: inherit;">Open fire</font>
+# scrape every details page informations and store them in a csv file
+def scrape_details_and_store(links):    
+    driver = webdriver.Chrome(service=Service(ChromeDriverManager().install()))
+    details_list = []
 
-	•	Terrace (Yes/No) Yes
-    <font dir="auto" style="vertical-align: inherit;">Furnished terrace</font>
+    for link in links:
+        print(f"Scraping details from: {link}")
+        driver.get(link)
+        time.sleep(2)  # wait for page to load
 
-	◦	If yes: Area
+        # Extract details Locality, Type of property, Subtype of property, Price, Type of sale, Number of rooms, Living Area, Fully equipped kitchen, Furnished, Open fire, Terrace, Garden, Surface of the land, Surface area of the plot of land, Number of facades, Swimming pool, State of the building
+        # <span class="city-line">9820 Merelbeke</span>
+        try:
+            locality = driver.find_element(By.CLASS_NAME, "city-line").text
+            match = re.search(r'\d+', locality)
+            locality = match.group() if match else "N/A"
+        except:
+            locality = "N/A"
 
-	•	Garden (Yes/No) no
-    <font dir="auto" style="vertical-align: inherit;">Garden</font>
 
-	◦	If yes: Area
+        # <span class="detail__header_title_main"> Residence for sale <span class="d-none d-lg-inline">- Merelbeke</span> <span class="vlancode">RBV33387</span></span>
+        try:
+            full_text = driver.find_element(By.CLASS_NAME, "detail__header_title_main").text
+            # Extract first word
+            property_subtype = full_text.split()[0] if full_text else "N/A"
+        except:
+            property_subtype = "N/A"
 
-	•	Surface of the land: no information
+        # Price
+        # <span class="detail__header_price_data"><small></small> 445 000 €
+        try: 
+            price_text = driver.find_element(By.CLASS_NAME, "detail__price").text
+            price = re.sub(r'[^\d]', '', price_text)
+            price = int(price) if price else "N/A"
+        except:
+            price = "N/A"
 
-	•	Surface area of the plot of land: no information
 
-	•	Number of facades: 4
-    <font dir="auto" style="vertical-align: inherit;">Number of facades</font>
-	
-    •	Swimming pool (Yes/No): no information
+        # <span class="detail__header_title_main"> Residence for sale <span class="d-none d-lg-inline">- Merelbeke</span> <span class="vlancode">RBV33387</span></span>
+        # store it like 0 or 1 
+        try:
+            full_line = driver.find_element(By.CLASS_NAME, "detail__header_title_main").text
+            # Extract the third word
+            sale_type = full_line.split()[2] if full_line else "N/A"
+        except:
+            sale_type = "N/A"
 
-	•	State of the building (New, to be renovated, ...)  new 
-    <font dir="auto" style="vertical-align: inherit;">Condition of the property</font>
+        # Number of rooms
+        # 
+        try:
+            wrapper = driver.find_element(By.CLASS_NAME, "data-row-wrapper")
+            bedrooms = wrapper.find_element(By.XPATH, ".//h4[text()='Number of bedrooms']/following-sibling::p").text
+        except:
+            bedrooms = "N/A" 
 
-"""
+        # Living Area
+        # <h4>Livable surface</h4>
+        try:
+            wrapper = driver.find_element(By.CLASS_NAME, "data-row-wrapper")
+            living_area = wrapper.find_element(By.XPATH, ".//h4[text()='Livable surface']/following-sibling::p").text
+        except:
+            living_area = "N/A"
+
+        # Fully equipped kitchen
+        # <h4>Kitchen equipment</h4>
+        try:
+            wrapper = driver.find_element(By.CLASS_NAME, "data-row-wrapper")
+            kitchen_text = wrapper.find_element(By.XPATH, ".//h4[text()='Kitchen equipment']/following-sibling::p").text.strip()
+            kitchen_equipment = 0 if kitchen_text.lower() == 'no' else 1
+        except:
+            kitchen_equipment = "N/A"
+        
+        # Furnished
+        try:
+            wrapper = driver.find_element(By.CLASS_NAME, "data-row-wrapper")
+            furnished_text = wrapper.find_element(By.XPATH, ".//h4[text()='Furnished']/following-sibling::p").text.strip()
+            furnished = 0 if furnished_text.lower() == 'no' else 1
+        except:
+            furnished = "N/A"
+
+        # Open fire
+        try:
+            wrapper = driver.find_element(By.CLASS_NAME, "data-row-wrapper")
+            open_fire_text = wrapper.find_element(By.XPATH, ".//h4[text()='Open fire']/following-sibling::p").text.strip()
+            open_fire = 0 if open_fire_text.lower() == 'no' else 1
+        except:
+            open_fire = "N/A"
+
+        # Terrace
+        # Garden
+        # Surface of the land
+        # Surface area of the plot of land
+        # Number of facades
+        # Swimming pool
+        # State of the building               
+
+        details_list.append({
+            "Link": link,
+            "Locality": locality,
+            "Subtype of property": property_subtype,
+            "Type of sale": sale_type, 
+            "Price": price,
+            "Number of rooms": bedrooms, 
+            "Living Area": living_area, 
+            "Fully equipped kitchen": kitchen_equipment,
+
+        })
+
+    driver.quit()
+
+    # store details Locality, Type of property, Subtype of property, Price, Type of sale, Number of rooms, Living Area, Fully equipped kitchen, Furnished, Open fire, Terrace, Garden, Surface of the land, Surface area of the plot of land, Number of facades, Swimming pool, State of the building in a csv file 
+
+
+
+
+    # Store details in CSV
+    with open('property_details.csv', 'w', newline='') as file:
+        writer = csv.DictWriter(file, fieldnames=["Link", "Locality", "Subtype of property", "Type of sale", "Price", "Number of rooms", "Living Area", "Fully equipped kitchen"])
+        writer.writeheader()
+        for details in details_list:
+            writer.writerow(details)
+    print(f"Stored details of {len(details_list)} properties in property_details.csv")
+
+def store_links(links):
+    with open('property_links.csv', 'w', newline='') as file:
+        writer = csv.writer(file)
+        writer.writerow(["Link"])
+        for link in links:
+            writer.writerow([link])
+    print(f"Stored {len(links)} links in property_links.csv")
+
+# Main execution
+all_links = fetch_all_links(main_url)
+store_links(all_links)
