@@ -1,10 +1,9 @@
 import requests
 import csv
-import time
 import re
 from bs4 import BeautifulSoup
 
-main_url = "https://immovlan.be/en/real-estate?transactiontypes=for-sale&propertytypes=house,apartment&propertysubtypes=residence,villa,mixed-building,master-house,cottage,bungalow,chalet,mansion,apartment,penthouse,ground-floor,duplex,studio,loft,triplex"
+base_url = "https://immovlan.be/en/real-estate?transactiontypes=for-sale,for-rent&propertytypes=apartment,house&propertysubtypes=apartment,ground-floor,duplex,penthouse,studio,loft,triplex,residence,villa,mixed-building,master-house,cottage,bungalow,chalet,mansion&sortdirection=ascending&sortby=price&noindex=1"
 
 HEADERS = {
     "User-Agent": "Mozilla/5.0"
@@ -13,174 +12,112 @@ HEADERS = {
 session = requests.Session()
 session.headers.update(HEADERS)
 
+# <input type="number" id="price-range-from" class="form-control">
+PRICE_FROM_PARAM = "minprice"   # e.g., "minPrice" or "price-from"
 
-def fetch_all_links(base_url, max_pages=50):
+# <input type="number" id="price-range-to" class="form-control">
+PRICE_TO_PARAM   = "maxprice"     # e.g., "maxPrice" or "price-to"
+
+# <button class="button button-secondary dropdown-toggle px-3 text-nowrap  " type="button" id="dropdownSearchButton" data-toggle="dropdown" aria-expanded="true">
+#                    <i class="fas fa-sort-alpha-down " aria-hidden="true"></i>
+#                </button>
+SORT_PARAM = "sortby"
+SORT_DIRECTION_PARAM = "sortdirection"
+SORT_VALUE = "price"
+SORT_DIRECTION_VALUE = "ascending"
+
+
+
+CARD_SELECTOR        = ".list-view-item"           # class for each property card
+LINK_ATTR            = "data-url"                   # attribute containing the detail URL
+PRICE_SELECTOR       = ".list-item-price"               # class for the price element on the card
+PROJECT_EXCLUDE      = "/projectdetail/"            # string to exclude project links
+
+def fetch_batch(min_price, max_pages=50):
     all_links = []
+    last_price = None
     page = 1
 
     while True:
-        if max_pages and page > max_pages:
-            print(f"Reached maximum page limit ({max_pages}). Stopping.")
+        if page > max_pages:
             break
 
-        # Build URL with page parameter
-        if page == 1:
-            url = base_url
-        else:
-            separator = "&" if "?" in base_url else "?"
-            url = f"{base_url}{separator}page={page}"
+        # Base URL with price filter and sorting
+        url = f"{base_url}&{PRICE_FROM_PARAM}={min_price}&{SORT_PARAM}={SORT_VALUE}&{SORT_DIRECTION_PARAM}={SORT_DIRECTION_VALUE}"
+        if page > 1:
+            url += f"&page={page}"
 
-        print(f"Fetching page {page}: {url}")
+        print(f"  Fetching page {page} (min_price={min_price}): {url}")
         try:
-            resp = session.get(url, timeout=10)
+            resp = session.get(url)
             resp.raise_for_status()
         except Exception as e:
-            print(f"Error fetching page {page}: {e}")
+            print(f"Error: {e}")
             break
 
         soup = BeautifulSoup(resp.text, "html.parser")
-        # Find all elements with class 'list-view-item' (could be article, div, etc.)
-        cards = soup.find_all(class_="list-view-item")
+        cards = soup.select(CARD_SELECTOR)   # e.g., ".list-view-item"
 
         if not cards:
-            print(f"No property cards found on page {page}. Stopping.")
             break
 
         page_links = []
         for card in cards:
-            link = card.get("data-url")
-            # check if link contains /projectdetail do not include it
-            if link and "/projectdetail/" not in link:
-                # The data-url is already absolute, no need to prepend domain
+            link = card.get(LINK_ATTR)       # e.g., "data-url"
+            if link and PROJECT_EXCLUDE not in link:
+                # Extract price from card (adjust selector as needed)
+                price_elem = card.select_one(PRICE_SELECTOR)  # e.g., ".card__price"
+                if price_elem:
+                    price_text = price_elem.get_text(strip=True)
+                    digits = re.sub(r'[^\d]', '', price_text)
+                    if digits:
+                        price = int(digits)
+                        last_price = price
                 page_links.append(link)
 
-        print(f"Page {page}: found {len(page_links)} links")
         all_links.extend(page_links)
 
-        # Check for a "Next" button – adjust selector as needed
-        next_btn = soup.find("a", string=re.compile(r"Next", re.I)) or \
-                   soup.find("a", attrs={"rel": "next"}) or \
-                   soup.find("li", class_="next")
+        # Check for next page
+        next_btn = (soup.find("a", string=re.compile(r"Next", re.I)) or
+                    soup.find("a", attrs={"rel": "next"}))
         if not next_btn:
-            print("No 'Next' button found – assuming last page.")
             break
 
         page += 1
-        time.sleep(1)
+
+    return all_links, last_price
+
+
+def fetch_all_links_dynamic():
+    """
+    Repeatedly fetch batches using the last price from the previous batch as the new minimum.
+    Continues until a batch returns no links.
+    """
+    all_links = []
+    min_price = 0          # start from the lowest price
+    batch_num = 1
+
+    while True:
+        print(f"\n=== Batch {batch_num}: min_price = {min_price} ===")
+        links, last_price = fetch_batch(min_price)
+
+        if not links:
+            print("No links found in this batch. Stopping.")
+            break
+
+        all_links.extend(links)
+        print(f"Batch {batch_num} collected {len(links)} links. Total so far: {len(all_links)}")
+
+        if last_price is None:
+            print("No price information extracted – cannot determine next min_price. Stopping.")
+            break
+
+        # Set next min_price to last_price + 1 to move forward
+        # (you may use a larger step if prices are very granular)
+        min_price = last_price + 1
+        batch_num += 1
 
     return all_links
-
-
-def scrape_details_and_store(links):
-    """Visit each property link, extract desired fields, and save to CSV."""
-    details_list = []
-
-    for link in links:
-        print(f"Scraping details from: {link}")
-        try:
-            resp = session.get(link, timeout=10)
-            resp.raise_for_status()
-        except Exception as e:
-            print(f"Failed to fetch {link}: {e}")
-            continue
-
-        soup = BeautifulSoup(resp.text, "html.parser")
-        detail = {"Link": link}
-
-        # Locality (postal code)
-        locality_elem = soup.find("span", class_="city-line")
-        if locality_elem:
-            text = locality_elem.get_text(strip=True)
-            match = re.search(r'\d+', text)
-            detail["Locality"] = match.group() if match else "N/A"
-        else:
-            detail["Locality"] = "N/A"
-
-        # Subtype of property (first word of the main title)
-        title_elem = soup.find("span", class_="detail__header_title_main")
-        if title_elem:
-            full_text = title_elem.get_text(strip=True)
-            detail["Subtype of property"] = full_text.split()[0] if full_text else "N/A"
-        else:
-            detail["Subtype of property"] = "N/A"
-
-        # Price
-        price_elem = soup.find("span", class_="detail__price")
-        if price_elem:
-            price_text = price_elem.get_text(strip=True)
-            digits = re.sub(r'[^\d]', '', price_text)
-            detail["Price"] = int(digits) if digits else "N/A"
-        else:
-            detail["Price"] = "N/A"
-
-        # Type of sale (third word of the main title)
-        if title_elem:
-            parts = title_elem.get_text(strip=True).split()
-            detail["Type of sale"] = parts[2] if len(parts) >= 3 else "N/A"
-        else:
-            detail["Type of sale"] = "N/A"
-
-        # Helper to extract text from a data row by <h4> label
-        def get_data_row(label):
-            # Find the <h4> with exact text, then take the next <p>
-            h4 = soup.find("h4", string=re.compile(rf"^{re.escape(label)}$", re.I))
-            if h4:
-                p = h4.find_next_sibling("p")
-                if p:
-                    return p.get_text(strip=True)
-            return None
-
-        # Number of bedrooms
-        bedrooms_text = get_data_row("Number of bedrooms")
-        detail["Number of rooms"] = bedrooms_text if bedrooms_text else "N/A"
-
-        # Living Area
-        living_text = get_data_row("Livable surface")
-        detail["Living Area"] = living_text if living_text else "N/A"
-
-        # Fully equipped kitchen (0/1)
-        kitchen_text = get_data_row("Kitchen equipment")
-        if kitchen_text:
-            detail["Fully equipped kitchen"] = 0 if kitchen_text.lower() == "no" else 1
-        else:
-            detail["Fully equipped kitchen"] = "N/A"
-
-        # Furnished (0/1)
-        furnished_text = get_data_row("Furnished")
-        if furnished_text:
-            detail["Furnished"] = 0 if furnished_text.lower() == "no" else 1
-        else:
-            detail["Furnished"] = "N/A"
-
-        # Open fire (0/1)
-        fire_text = get_data_row("Open fire")
-        if fire_text:
-            detail["Open fire"] = 0 if fire_text.lower() == "no" else 1
-        else:
-            detail["Open fire"] = "N/A"
-
-        # Terrace, Garden, Surface of the land, Surface area of the plot of land,
-        # Number of facades, Swimming pool, State of the building
-        # (Add similar extraction for the remaining fields if desired)
-
-        details_list.append(detail)
-        time.sleep(1)  # be polite
-
-    # Write to CSV
-    fieldnames = [
-        "Link", "Locality", "Subtype of property", "Type of sale", "Price",
-        "Number of rooms", "Living Area", "Fully equipped kitchen",
-        "Furnished", "Open fire"
-        # Add more fields here if you extend the extraction
-    ]
-    with open("property_details.csv", "w", newline="", encoding="utf-8") as f:
-        writer = csv.DictWriter(f, fieldnames=fieldnames)
-        writer.writeheader()
-        for row in details_list:
-            writer.writerow(row)
-
-    print(f"Stored details of {len(details_list)} properties in property_details.csv")
-
 
 def store_links(links):
     """Save the list of property URLs to a CSV file."""
@@ -193,9 +130,9 @@ def store_links(links):
 
 
 if __name__ == "__main__":
-    all_links = fetch_all_links(main_url)
+    all_links = fetch_all_links_dynamic()
     if all_links:
         store_links(all_links)
-        scrape_details_and_store(all_links)
+        #scrape_details_and_store(all_links)
     else:
         print("No links found. Exiting.")
