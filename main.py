@@ -1,7 +1,9 @@
 import requests
 import csv
 import re
+import os
 from bs4 import BeautifulSoup
+import lxml
 
 base_url = "https://immovlan.be/en/real-estate?transactiontypes=for-sale,for-rent&propertytypes=apartment,house&propertysubtypes=apartment,ground-floor,duplex,penthouse,studio,loft,triplex,residence,villa,mixed-building,master-house,cottage,bungalow,chalet,mansion&sortdirection=ascending&sortby=price&noindex=1"
 
@@ -23,6 +25,19 @@ LINK_ATTR            = "data-url"
 PRICE_SELECTOR       = ".list-item-price"
 PROJECT_EXCLUDE      = "/projectdetail/"
 
+# CSV file names
+LINKS_CSV = "property_links.csv"
+DETAILS_CSV = "property_details.csv"
+
+# Fields for details CSV
+DETAILS_FIELDS = [
+    "Link", "Locality", "Type of property", "Subtype of property",
+    "Price", "Type of sale", "Number of rooms", "Livable surface",
+    "Fully equipped kitchen", "Furnished", "Fireplace", "Terrace",
+    "Garden", "Total land surface", "Number of facades", "Swimming pool",
+    "State of the property"
+]
+
 
 def fetch_batch(min_price, max_pages=50):
     all_links = []
@@ -37,7 +52,7 @@ def fetch_batch(min_price, max_pages=50):
         if page > 1:
             url += f"&page={page}"
 
-        print(f"Fetching page {page}")
+        # print(f"Fetching page {page}")
         try:
             resp = session.get(url)
             resp.raise_for_status()
@@ -45,7 +60,7 @@ def fetch_batch(min_price, max_pages=50):
             print(f"Error: {e}")
             break
 
-        soup = BeautifulSoup(resp.text, "html.parser")
+        soup = soup = BeautifulSoup(resp.text, "lxml")
         cards = soup.select(CARD_SELECTOR)
 
         if not cards:
@@ -127,203 +142,319 @@ Number of facades
 Swimming pool (Yes/No)
 State of the building (New, to be renovated, ...)
 """
-def scrape_details_and_store(links):
-    """Visit each property link, extract desired fields, and save to CSV."""
-    details_list = []
+def scrape_details_and_store(links, filename=DETAILS_CSV):
+    """
+    Visit each property link, extract desired fields, and append to details CSV.
+    """
+    
+    if not links:
+        print("No links to scrape details for.")
+        return
+    
+    file_exists = os.path.exists(filename)
+    with open(filename, "a", newline="", encoding="utf-8") as f:
+        writer = csv.DictWriter(f, fieldnames=DETAILS_FIELDS)
+        if not file_exists:
+            writer.writeheader()
 
-    for link in links:
-        print(f"Scraping details from: {link}")
-        try:
-            resp = session.get(link, timeout=10)
-            resp.raise_for_status()
-        except Exception as e:
-            print(f"Failed to fetch {link}: {e}")
-            continue
+        for index, link in enumerate(links, start=1):
+            # print(f"{index}. Fetching details of {link}")
+            try:
+                resp = session.get(link, timeout=10)
+                resp.raise_for_status()
+            except Exception as e:
+                print(f"Failed to fetch {link}: {e}")
+                continue
 
-        soup = BeautifulSoup(resp.text, "html.parser")
-        detail = {"Link": link}
+            soup = soup = BeautifulSoup(resp.text, "lxml")
+            detail = {field: "N/A" for field in DETAILS_FIELDS}
+            detail["Link"] = link
 
-        # ==========================================================
-        # Locality (postal code) 
-        # ==========================================================
-        locality_elem = soup.find("span", class_="city-line")
-        if locality_elem:
-            text = locality_elem.get_text(strip=True)
-            match = re.search(r'\d+', text)
-            detail["Locality"] = match.group() if match else "N/A"
-        else:
-            detail["Locality"] = "N/A"
-        # ==========================================================
-        # type of property 
-        # ==========================================================
+            print(f"started scraping: {link}")
+            # ==========================================================
+            # Locality (postal code)
+            # ==========================================================
+            locality_elem = soup.find("span", class_="city-line")
+            if locality_elem:
+                text = locality_elem.get_text(strip=True)
+                match = re.search(r'\d+', text)
+                detail["Locality"] = match.group() if match else "N/A"
+            else:
+                detail["Locality"] = "N/A"
 
-        # ==========================================================
-        # Subtype of property (first word of the main title)
-        # ==========================================================
-        title_elem = soup.find("span", class_="detail__header_title_main")
-        if title_elem:
-            full_text = title_elem.get_text(strip=True)
-            detail["Subtype of property"] = full_text.split()[0] if full_text else "N/A"
-        else:
-            detail["Subtype of property"] = "N/A"
+            # ==========================================================
+            # Subtype & Type of property
+            # ==========================================================
+            title_elem = soup.find("span", class_="detail__header_title_main")
+            if title_elem:
+                full_text = title_elem.get_text(strip=True)
+                normalized = full_text.lower().strip()
 
-        # ==========================================================
-        # Price
-        # ==========================================================
-        price_elem = soup.find("span", class_="detail__price")
-        if price_elem:
-            price_text = price_elem.get_text(strip=True)
-            digits = re.sub(r'[^\d]', '', price_text)
-            detail["Price"] = int(digits) if digits else "N/A"
-        else:
-            detail["Price"] = "N/A"
+                subtype_mappings = [
+                    ("apartment", "01", "1"),
+                    ("penthous", "02", "1"),
+                    ("ground floor", "03", "1"),
+                    ("duplex", "04", "1"),
+                    ("studio", "05", "1"),
+                    ("loft", "06", "1"),
+                    ("triplex", "07", "1"),
+                    ("residence", "11", "2"),
+                    ("villa", "12", "2"),
+                    ("mixed building", "13", "2"),
+                    ("master house", "14", "2"),
+                    ("cottage", "15", "2"),
+                    ("bangalow", "16", "2"),
+                    ("chalet", "17", "2"),
+                    ("mansion", "18", "2")
+                ]
 
-        # ==========================================================
-        # Type of sale
-        # ==========================================================
-        if title_elem:
-            parts = title_elem.get_text(strip=True).split()
-            detail["Type of sale"] = parts[2] if len(parts) >= 3 else "N/A"
-        else:
-            detail["Type of sale"] = "N/A"
+                subtype_mappings.sort(key=lambda x: len(x[0]), reverse=True)
+                found = False
+                for pattern, code, prop_type in subtype_mappings:
+                    if normalized.startswith(pattern):
+                        detail["Type of property"] = int(prop_type)
+                        detail["Subtype of property"] = code
+                        found = True
+                        break
 
-        # Helper to extract text from a data row by <h4> label
-        def get_data_row(label):
-            # Find the <h4> with exact text, then take the next <p>
-            h4 = soup.find("h4", string=re.compile(rf"^{re.escape(label)}$", re.I))
+                if not found:
+                    detail["Subtype of property"] = "N/A"
+                    detail["Type of property"] = "N/A"
+            else:
+                detail["Subtype of property"] = "N/A"
+                detail["Type of property"] = "N/A"
+            # ==========================================================
+            # Price
+            # ==========================================================
+            price_elem = soup.find("span", class_="detail__header_price_data")
+            if price_elem:
+                price_text = price_elem.get_text(strip=True)
+                digits = re.sub(r'[^\d]', '', price_text)
+                detail["Price"] = int(digits) if digits else "N/A"
+            else:
+                detail["Price"] = "N/A"
+
+            # ==========================================================
+            # Type of sale
+            # ==========================================================
+            if title_elem:
+                full_text = title_elem.get_text(strip=True).lower()
+                if "rent" in full_text:
+                    detail["Type of sale"] = 1
+                elif "sale" in full_text:
+                    detail["Type of sale"] = 2
+                else:
+                    detail["Type of sale"] = "N/A"
+            else:
+                detail["Type of sale"] = "N/A"
+
+            # ==========================================================
+            # Helper to extract text from a data row by <h4> label
+            # ==========================================================
+            def get_data_row(label):
+                h4 = soup.find("h4", string=re.compile(rf"^{re.escape(label)}$", re.I))
+                if h4:
+                    p = h4.find_next_sibling("p")
+                    if p:
+                        return p.get_text(strip=True)
+                return None
+
+            # ==========================================================
+            # Number of bedrooms
+            # ==========================================================
+            bedrooms_text = get_data_row("Number of bedrooms")
+            if bedrooms_text:
+                digits = re.sub(r'[^\d]', '', bedrooms_text)
+                bedrooms = int(digits) if digits else None
+            else:
+                bedrooms = None
+            detail["Number of rooms"] = bedrooms if bedrooms is not None else "N/A"
+
+            # ==========================================================
+            # Living area
+            # ==========================================================
+            living_text = get_data_row("Livable surface")
+            if living_text:
+                digits = re.sub(r'[^\d]', '', living_text)
+                living_area = int(digits) if digits else None
+            else:
+                living_area = None
+            detail["Livable surface"] = living_area if living_area is not None else "N/A"
+
+            # ==========================================================
+            # Fully equipped kitchen
+            # ==========================================================
+            kitchen_text = get_data_row("Kitchen equipment")
+            if kitchen_text:
+                detail["Fully equipped kitchen"] = 0 if kitchen_text.lower() == "no" else 1
+            else:
+                detail["Fully equipped kitchen"] = "N/A"
+
+            # ==========================================================
+            # Furnished
+            # ==========================================================
+            furnished_text = get_data_row("Furnished")
+            if furnished_text:
+                detail["Furnished"] = 0 if furnished_text.lower() == "no" else 1
+            else:
+                detail["Furnished"] = "N/A"
+
+            # ==========================================================
+            # Open fire
+            # ==========================================================
+            fire_text = get_data_row("Fireplace")
+            if fire_text:
+                detail["Fireplace"] = 0 if fire_text.lower() == "no" else 1
+            else:
+                detail["Fireplace"] = "N/A"
+
+            # ==========================================================
+            # Terrace
+            # ==========================================================
+            terrace_text = get_data_row("Terrace")
+            if terrace_text:
+                detail["Terrace"] = 0 if terrace_text.lower() == "no" else 1
+            else:
+                detail["Terrace"] = "N/A"
+
+            # ==========================================================
+            # Garden
+            # ==========================================================
+            garden_text = get_data_row("Garden")
+            if garden_text:
+                detail["Garden"] = 0 if garden_text.lower() == "no" else 1
+            else:
+                detail["Garden"] = "N/A"
+
+            # ==========================================================
+            # Total land surface
+            # ==========================================================
+            land_text = get_data_row("Total land surface")
+            if land_text:
+                digits = re.sub(r'[^\d]', '', land_text)
+                land_area = int(digits) if digits else None
+            else:
+                land_area = None
+            detail["Total land surface"] = land_area if land_area is not None else "N/A"
+
+            # ==========================================================
+            # Number of facades
+            # ==========================================================
+            facades_text = get_data_row("Number of facades")
+            if facades_text:
+                digits = re.sub(r'[^\d]', '', facades_text)
+                facades = int(digits) if digits else None
+            else:
+                facades = None
+            detail["Number of facades"] = facades if facades is not None else "N/A"
+
+            # ==========================================================
+            # Swimming pool
+            # ==========================================================
+            pool_text = get_data_row("Swimming pool")
+            if pool_text:
+                detail["Swimming pool"] = 0 if pool_text.lower() == "no" else 1
+            else:
+                detail["Swimming pool"] = "N/A"
+
+            # ==========================================================
+            # State of the property
+            # ==========================================================
+            h4 = soup.find('h4', string=re.compile(r'State of the property', re.I))
             if h4:
-                p = h4.find_next_sibling("p")
+                p = h4.find_next('p')
                 if p:
-                    return p.get_text(strip=True)
-            return None
-
-        # ==========================================================
-        # Number of bedrooms
-        # ==========================================================
-        bedrooms_text = get_data_row("Number of bedrooms")
-        if bedrooms_text:
-            # Extract all digits from the string (handles "3", "3 bedrooms", etc.)
-            digits = ''.join(filter(str.isdigit, bedrooms_text))
-            bedrooms = int(digits) if digits else None
-        else:
-            bedrooms = None
-
-        detail["Number of rooms"] = bedrooms if bedrooms is not None else "N/A"
-
-        # ==========================================================
-        # Living Area
-        # ==========================================================
-        linving_area_text = get_data_row("Livable surface")
-        if linving_area_text:
-        # Extract all digits and join them (handles numbers like "12000")
-            digits = ''.join(filter(str.isdigit, linving_area_text))
-            living_land_area = int(digits) if digits else None
-        else:
-            living_land_area = None
-
-        detail["Livable surface"] = living_land_area if living_land_area is not None else "N/A"
-
-        # ==========================================================
-        # Fully equipped kitchen (0/1)
-        # ==========================================================
-        kitchen_text = get_data_row("Kitchen equipment")
-        if kitchen_text:
-            detail["Fully equipped kitchen"] = 0 if kitchen_text.lower() == "no" else 1
-        else:
-            detail["Fully equipped kitchen"] = "N/A"
-
-        # ==========================================================
-        # Furnished (0/1)
-        # ==========================================================
-        furnished_text = get_data_row("Furnished")
-        if furnished_text:
-            detail["Furnished"] = 0 if furnished_text.lower() == "no" else 1
-        else:
-            detail["Furnished"] = "N/A"
-
-        # ==========================================================
-        # Open fire (0/1)
-        # ==========================================================
-        fire_text = get_data_row("Open fire")
-        if fire_text:
-            detail["Open fire"] = 0 if fire_text.lower() == "no" else 1
-        else:
-            detail["Open fire"] = "N/A"
-
-        # ==========================================================
-        # Terrace
-        # ==========================================================
-        terrace = get_data_row("Terrace")
-        if terrace:
-            detail["Terrace"] = 0 if terrace.lower() == "no" else 1
-        else:
-            detail["Terrace"] = "N/A"
-
-        # ==========================================================
-        # Garden Surface garden
-        # ==========================================================
-        garden = get_data_row("Garden")
-        if garden:
-            detail["Garden"] = 0 if garden.lower() == "no" else 1
-        else:
-            detail["Garden"] = "N/A"
-
-        # ==========================================================
-        # Surface of the land 
-        # ==========================================================
-        land_area_text = get_data_row("Total land surface")
-        if land_area_text:
-        # Extract all digits and join them (handles numbers like "12000")
-            digits = ''.join(filter(str.isdigit, land_area_text))
-            land_area = int(digits) if digits else None
-        else:
-            land_area = None
-
-        detail["Total land surface"] = land_area if land_area is not None else "N/A"
-
-        # ==========================================================
-        # Number of facades Number of facades
-        # ==========================================================
-        facades_text = get_data_row("Number of facades")
-        if facades_text:
-            digits = ''.join(filter(str.isdigit, facades_text))
-            facades = int(digits) if digits else None
-        else:
-            facades = None
-
-        detail["Number of facades"] = facades if facades is not None else "N/A"
-
-        # ==========================================================
-        # Swimming pool
-        # ==========================================================
-        swimming_pool = get_data_row("Swimming pool")
-        if swimming_pool:
-            detail["Swimming pool"] = 0 if swimming_pool.lower() == "no" else 1
-        else:
-            detail["Swimming pool"] = "N/A"        
+                    state_text = p.get_text(strip=True)
             
-        # ==========================================================
-        # State of the building
-        # ==========================================================
+            state_mapping = {
+                "new": 1,
+                "excellent": 2,
+                "fully renovated": 3,
+                "normal": 4,
+                "to renovate": 5, 
+                "to be renovated": 5,
+            }
+            
+            if state_text and state_text != "N/A":
+                lower_text = state_text.lower().strip()
+                matched_code = "N/A"
+                for key, code in state_mapping.items():
+                    if key in lower_text:
+                        matched_code = code
+                        break
+                detail["State of the property"] = matched_code
+            else:
+                detail["State of the property"] = "N/A"
 
+            writer.writerow(detail)
 
-        details_list.append(detail)
+def load_existing_links(filename):
+    """Load existing property URLs from CSV into a set."""
+    existing = set()
+    if os.path.exists(filename):
+        with open(filename, "r", encoding="utf-8") as f:
+            reader = csv.reader(f)
+            next(reader, None)  # skip header
+            for row in reader:
+                if row:
+                    existing.add(row[0])
+    return existing
 
-
-def store_links(links):
-    """Save the list of property URLs to a CSV file."""
-    with open("property_links.csv", "w", newline="", encoding="utf-8") as f:
+def store_new_links(new_links, filename=LINKS_CSV):
+    """Append new links to the CSV file (creates file with header if needed)."""
+    if not new_links:
+        print("No new links to store.")
+        return
+    file_exists = os.path.exists(filename)
+    with open(filename, "a", newline="", encoding="utf-8") as f:
         writer = csv.writer(f)
-        writer.writerow(["Link"])
-        for link in links:
+        if not file_exists:
+            writer.writerow(["Link"])
+        for link in new_links:
             writer.writerow([link])
-    print(f"Stored {len(links)} links in property_links.csv")
+    print(f"Appended {len(new_links)} new links to {filename}")
 
 
 if __name__ == "__main__":
-    all_links = fetch_all_links_dynamic()
-    if all_links:
-        store_links(all_links)
-        scrape_details_and_store(all_links)
-    else:
-        print("No links found. Exiting.")
+    # # -------------------------------
+    # # TEST MODE: process a limited number of links from the saved CSV
+    # # -------------------------------
+    # # Set the number of links you want to test (e.g., 1000)
+    # TEST_LINK_COUNT = 100
+    # TEST_OUTPUT_CSV = "property_details_test.csv"
+
+    # # Load existing links from the main links file
+    # existing_links = load_existing_links(LINKS_CSV)  # returns a set
+    # print(f"Found {len(existing_links)} links in {LINKS_CSV}.")
+
+    # # Convert set to list and take the first TEST_LINK_COUNT links
+    # link_list = list(existing_links)
+    # if len(link_list) > TEST_LINK_COUNT:
+    #     links_to_scrape = link_list[:TEST_LINK_COUNT]
+    # else:
+    #     links_to_scrape = link_list
+    # print(f"Will scrape details for {len(links_to_scrape)} links (first {TEST_LINK_COUNT} from {LINKS_CSV}).")
+
+    # # Scrape details for these links and store them in a separate test CSV
+    # # (scrape_details_and_store will create the file and header if it doesn't exist)
+    # scrape_details_and_store(links_to_scrape, filename=TEST_OUTPUT_CSV)
+
+    # print(f"Done. Results saved to {TEST_OUTPUT_CSV}.")
+
+    # ------------------------------------------------------------
+    # Scrape ALL links from property_links.csv and save details
+    # ------------------------------------------------------------
+    OUTPUT_CSV = "property_details.csv"
+
+    # Load all links from the links file
+    existing_links = load_existing_links(LINKS_CSV)   # returns a set
+    print(f"Found {len(existing_links)} links in {LINKS_CSV}.")
+
+    # Convert set to list (all links)
+    links_to_scrape = list(existing_links)
+    print(f"Will scrape details for all {len(links_to_scrape)} links.")
+
+    # Scrape details for all links
+    scrape_details_and_store(links_to_scrape, filename=OUTPUT_CSV)
+
+    print(f"Done. Results saved to {OUTPUT_CSV}.")
