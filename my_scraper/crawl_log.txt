@@ -1,0 +1,13 @@
+2026-02-24 19:29:28 [scrapy.utils.log] INFO: Scrapy 2.14.1 started (bot: my_scraper)
+2026-02-24 19:29:29 [scrapy.utils.log] INFO: Versions:
+{'lxml': '6.0.2',
+ 'libxml2': '2.11.9',
+ 'cssselect': '1.4.0',
+ 'parsel': '1.11.0',
+ 'w3lib': '2.4.0',
+ 'Twisted': '25.5.0',
+ 'Python': '3.13.9 | packaged by Anaconda, Inc. | (main, Oct 21 2025, '
+           '19:09:58) [MSC v.1929 64 bit (AMD64)]',
+ 'pyOpenSSL': '25.3.0 (OpenSSL 3.5.5 27 Jan 2026)',
+ 'cryptography': '46.0.5',
+ 'Platform': 'Windows-10-10.0.19045-SP0'}
