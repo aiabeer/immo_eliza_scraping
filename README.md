@@ -7,7 +7,7 @@ This project is the first phase of a data science mission for ImmoEliza. The goa
 The URL used for the project is the following:
 "https://immovlan.be/en/real-estate?transactiontypes=for-sale,for-rent&propertytypes=apartment,house&propertysubtypes=apartment,ground-floor,duplex,penthouse,studio,loft,triplex,residence,villa,mixed-building,master-house,cottage,bungalow,chalet,mansion&sortdirection=ascending&sortby=price&noindex=1"
 
-It filters houses and appartments for rent in Belgium.
+It filters houses and appartments for rent and for sale in Belgium.
 
 
 Installation:
