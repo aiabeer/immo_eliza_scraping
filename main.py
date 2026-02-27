@@ -3,7 +3,6 @@ import csv
 import re
 import os
 from bs4 import BeautifulSoup
-import lxml
 
 base_url = "https://immovlan.be/en/real-estate?transactiontypes=for-sale,for-rent&propertytypes=apartment,house&propertysubtypes=apartment,ground-floor,duplex,penthouse,studio,loft,triplex,residence,villa,mixed-building,master-house,cottage,bungalow,chalet,mansion&sortdirection=ascending&sortby=price&noindex=1"
 
@@ -48,11 +47,11 @@ def fetch_batch(min_price, max_pages=50):
         if page > max_pages:
             break
 
+        # Build URL with current min_price and page
         url = f"{base_url}&{PRICE_FROM_PARAM}={min_price}&{SORT_PARAM}={SORT_VALUE}&{SORT_DIRECTION_PARAM}={SORT_DIRECTION_VALUE}"
         if page > 1:
             url += f"&page={page}"
 
-        # print(f"Fetching page {page}")
         try:
             resp = session.get(url)
             resp.raise_for_status()
@@ -60,7 +59,7 @@ def fetch_batch(min_price, max_pages=50):
             print(f"Error: {e}")
             break
 
-        soup = soup = BeautifulSoup(resp.text, "lxml")
+        soup = BeautifulSoup(resp.text, "html.parser")
         cards = soup.select(CARD_SELECTOR)
 
         if not cards:
@@ -116,41 +115,20 @@ def fetch_all_links_dynamic():
             print("No price information extracted – cannot determine next min_price. Stopping.")
             break
 
-
         min_price = last_price + 1
         batch_num += 1
 
     return all_links
 
-"""Locality
-Type of property (House/apartment)
-Subtype of property (Bungalow, Chalet, Mansion, ...)
-Price
-Type of sale (Exclusion of life sales)
-Number of rooms
-Living Area
-Fully equipped kitchen (Yes/No)
-Furnished (Yes/No)
-Open fire (Yes/No)
-Terrace (Yes/No)
-If yes: Area
-Garden (Yes/No)
-If yes: Area
-Surface of the land
-Surface area of the plot of land
-Number of facades
-Swimming pool (Yes/No)
-State of the building (New, to be renovated, ...)
-"""
+
 def scrape_details_and_store(links, filename=DETAILS_CSV):
     """
     Visit each property link, extract desired fields, and append to details CSV.
     """
-    
     if not links:
         print("No links to scrape details for.")
         return
-    
+
     file_exists = os.path.exists(filename)
     with open(filename, "a", newline="", encoding="utf-8") as f:
         writer = csv.DictWriter(f, fieldnames=DETAILS_FIELDS)
@@ -158,7 +136,7 @@ def scrape_details_and_store(links, filename=DETAILS_CSV):
             writer.writeheader()
 
         for index, link in enumerate(links, start=1):
-            # print(f"{index}. Fetching details of {link}")
+            print(f"{index}. Fetching details of {link}")
             try:
                 resp = session.get(link, timeout=10)
                 resp.raise_for_status()
@@ -166,25 +144,18 @@ def scrape_details_and_store(links, filename=DETAILS_CSV):
                 print(f"Failed to fetch {link}: {e}")
                 continue
 
-            soup = soup = BeautifulSoup(resp.text, "lxml")
+            soup = BeautifulSoup(resp.text, "html.parser")
             detail = {field: "N/A" for field in DETAILS_FIELDS}
             detail["Link"] = link
 
-            print(f"started scraping: {link}")
-            # ==========================================================
             # Locality (postal code)
-            # ==========================================================
             locality_elem = soup.find("span", class_="city-line")
             if locality_elem:
                 text = locality_elem.get_text(strip=True)
                 match = re.search(r'\d+', text)
                 detail["Locality"] = match.group() if match else "N/A"
-            else:
-                detail["Locality"] = "N/A"
 
-            # ==========================================================
             # Subtype & Type of property
-            # ==========================================================
             title_elem = soup.find("span", class_="detail__header_title_main")
             if title_elem:
                 full_text = title_elem.get_text(strip=True)
@@ -223,20 +194,15 @@ def scrape_details_and_store(links, filename=DETAILS_CSV):
             else:
                 detail["Subtype of property"] = "N/A"
                 detail["Type of property"] = "N/A"
-            # ==========================================================
+
             # Price
-            # ==========================================================
             price_elem = soup.find("span", class_="detail__header_price_data")
             if price_elem:
                 price_text = price_elem.get_text(strip=True)
                 digits = re.sub(r'[^\d]', '', price_text)
                 detail["Price"] = int(digits) if digits else "N/A"
-            else:
-                detail["Price"] = "N/A"
 
-            # ==========================================================
             # Type of sale
-            # ==========================================================
             if title_elem:
                 full_text = title_elem.get_text(strip=True).lower()
                 if "rent" in full_text:
@@ -248,9 +214,7 @@ def scrape_details_and_store(links, filename=DETAILS_CSV):
             else:
                 detail["Type of sale"] = "N/A"
 
-            # ==========================================================
             # Helper to extract text from a data row by <h4> label
-            # ==========================================================
             def get_data_row(label):
                 h4 = soup.find("h4", string=re.compile(rf"^{re.escape(label)}$", re.I))
                 if h4:
@@ -259,9 +223,7 @@ def scrape_details_and_store(links, filename=DETAILS_CSV):
                         return p.get_text(strip=True)
                 return None
 
-            # ==========================================================
             # Number of bedrooms
-            # ==========================================================
             bedrooms_text = get_data_row("Number of bedrooms")
             if bedrooms_text:
                 digits = re.sub(r'[^\d]', '', bedrooms_text)
@@ -270,9 +232,7 @@ def scrape_details_and_store(links, filename=DETAILS_CSV):
                 bedrooms = None
             detail["Number of rooms"] = bedrooms if bedrooms is not None else "N/A"
 
-            # ==========================================================
             # Living area
-            # ==========================================================
             living_text = get_data_row("Livable surface")
             if living_text:
                 digits = re.sub(r'[^\d]', '', living_text)
@@ -281,54 +241,42 @@ def scrape_details_and_store(links, filename=DETAILS_CSV):
                 living_area = None
             detail["Livable surface"] = living_area if living_area is not None else "N/A"
 
-            # ==========================================================
             # Fully equipped kitchen
-            # ==========================================================
             kitchen_text = get_data_row("Kitchen equipment")
             if kitchen_text:
                 detail["Fully equipped kitchen"] = 0 if kitchen_text.lower() == "no" else 1
             else:
                 detail["Fully equipped kitchen"] = "N/A"
 
-            # ==========================================================
             # Furnished
-            # ==========================================================
             furnished_text = get_data_row("Furnished")
             if furnished_text:
                 detail["Furnished"] = 0 if furnished_text.lower() == "no" else 1
             else:
                 detail["Furnished"] = "N/A"
 
-            # ==========================================================
             # Open fire
-            # ==========================================================
             fire_text = get_data_row("Fireplace")
             if fire_text:
                 detail["Fireplace"] = 0 if fire_text.lower() == "no" else 1
             else:
                 detail["Fireplace"] = "N/A"
 
-            # ==========================================================
             # Terrace
-            # ==========================================================
             terrace_text = get_data_row("Terrace")
             if terrace_text:
                 detail["Terrace"] = 0 if terrace_text.lower() == "no" else 1
             else:
                 detail["Terrace"] = "N/A"
 
-            # ==========================================================
             # Garden
-            # ==========================================================
             garden_text = get_data_row("Garden")
             if garden_text:
                 detail["Garden"] = 0 if garden_text.lower() == "no" else 1
             else:
                 detail["Garden"] = "N/A"
 
-            # ==========================================================
             # Total land surface
-            # ==========================================================
             land_text = get_data_row("Total land surface")
             if land_text:
                 digits = re.sub(r'[^\d]', '', land_text)
@@ -337,9 +285,7 @@ def scrape_details_and_store(links, filename=DETAILS_CSV):
                 land_area = None
             detail["Total land surface"] = land_area if land_area is not None else "N/A"
 
-            # ==========================================================
             # Number of facades
-            # ==========================================================
             facades_text = get_data_row("Number of facades")
             if facades_text:
                 digits = re.sub(r'[^\d]', '', facades_text)
@@ -348,33 +294,30 @@ def scrape_details_and_store(links, filename=DETAILS_CSV):
                 facades = None
             detail["Number of facades"] = facades if facades is not None else "N/A"
 
-            # ==========================================================
             # Swimming pool
-            # ==========================================================
             pool_text = get_data_row("Swimming pool")
             if pool_text:
                 detail["Swimming pool"] = 0 if pool_text.lower() == "no" else 1
             else:
                 detail["Swimming pool"] = "N/A"
 
-            # ==========================================================
             # State of the property
-            # ==========================================================
+            state_text = "N/A"
             h4 = soup.find('h4', string=re.compile(r'State of the property', re.I))
             if h4:
                 p = h4.find_next('p')
                 if p:
                     state_text = p.get_text(strip=True)
-            
+
             state_mapping = {
                 "new": 1,
                 "excellent": 2,
                 "fully renovated": 3,
                 "normal": 4,
-                "to renovate": 5, 
+                "to renovate": 5,
                 "to be renovated": 5,
             }
-            
+
             if state_text and state_text != "N/A":
                 lower_text = state_text.lower().strip()
                 matched_code = "N/A"
@@ -388,6 +331,7 @@ def scrape_details_and_store(links, filename=DETAILS_CSV):
 
             writer.writerow(detail)
 
+
 def load_existing_links(filename):
     """Load existing property URLs from CSV into a set."""
     existing = set()
@@ -399,6 +343,7 @@ def load_existing_links(filename):
                 if row:
                     existing.add(row[0])
     return existing
+
 
 def store_new_links(new_links, filename=LINKS_CSV):
     """Append new links to the CSV file (creates file with header if needed)."""
@@ -416,45 +361,30 @@ def store_new_links(new_links, filename=LINKS_CSV):
 
 
 if __name__ == "__main__":
-    # # -------------------------------
-    # # TEST MODE: process a limited number of links from the saved CSV
-    # # -------------------------------
-    # # Set the number of links you want to test (e.g., 1000)
-    # TEST_LINK_COUNT = 100
-    # TEST_OUTPUT_CSV = "property_details_test.csv"
+    # ------------------------------------------------------------
+    # STEP 1: Fetch all property links from the website
+    # ------------------------------------------------------------
+    print("Starting link collection...")
+    all_links = fetch_all_links_dynamic()
+    print(f"\nTotal links collected: {len(all_links)}")
 
-    # # Load existing links from the main links file
-    # existing_links = load_existing_links(LINKS_CSV)  # returns a set
-    # print(f"Found {len(existing_links)} links in {LINKS_CSV}.")
-
-    # # Convert set to list and take the first TEST_LINK_COUNT links
-    # link_list = list(existing_links)
-    # if len(link_list) > TEST_LINK_COUNT:
-    #     links_to_scrape = link_list[:TEST_LINK_COUNT]
-    # else:
-    #     links_to_scrape = link_list
-    # print(f"Will scrape details for {len(links_to_scrape)} links (first {TEST_LINK_COUNT} from {LINKS_CSV}).")
-
-    # # Scrape details for these links and store them in a separate test CSV
-    # # (scrape_details_and_store will create the file and header if it doesn't exist)
-    # scrape_details_and_store(links_to_scrape, filename=TEST_OUTPUT_CSV)
-
-    # print(f"Done. Results saved to {TEST_OUTPUT_CSV}.")
+    # Store the links (overwrite any existing file)
+    with open(LINKS_CSV, "w", newline="", encoding="utf-8") as f:
+        writer = csv.writer(f)
+        writer.writerow(["Link"])
+        for link in all_links:
+            writer.writerow([link])
+    print(f"Links saved to {LINKS_CSV}")
 
     # ------------------------------------------------------------
-    # Scrape ALL links from property_links.csv and save details
+    # STEP 2: Scrape details for all collected links
     # ------------------------------------------------------------
-    OUTPUT_CSV = "property_details.csv"
+    print("\nStarting details scraping...")
+    # Load links from the file (or use all_links directly)
+    links_to_scrape = load_existing_links(LINKS_CSV)
+    print(f"Loaded {len(links_to_scrape)} links from {LINKS_CSV}.")
 
-    # Load all links from the links file
-    existing_links = load_existing_links(LINKS_CSV)   # returns a set
-    print(f"Found {len(existing_links)} links in {LINKS_CSV}.")
+    # Scrape details and append to property_details.csv
+    scrape_details_and_store(list(links_to_scrape), filename=DETAILS_CSV)
 
-    # Convert set to list (all links)
-    links_to_scrape = list(existing_links)
-    print(f"Will scrape details for all {len(links_to_scrape)} links.")
-
-    # Scrape details for all links
-    scrape_details_and_store(links_to_scrape, filename=OUTPUT_CSV)
-
-    print(f"Done. Results saved to {OUTPUT_CSV}.")
+    print(f"\nAll done! Details saved to {DETAILS_CSV}.")
