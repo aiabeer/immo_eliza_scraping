@@ -1,8 +1,0 @@
-beautifulsoup4==4.12.3
-bs4==0.0.2
-lxml==6.0.2
-pandas==2.0.3
-requests==2.31.0
-chromedrivermanager==0.2.1
-webdriver-manager==3.8.5
-selenium==4.11.2
