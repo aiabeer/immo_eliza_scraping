@@ -1,10 +1,10 @@
 import requests
 import re
-import csv
 import os
 import threading
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from bs4 import BeautifulSoup
+import pandas as pd
 
 
 class DetailScraper:
@@ -16,8 +16,8 @@ class DetailScraper:
     DETAILS_FIELDS = [
         "Link", "Locality", "Type of property", "Subtype of property",
         "Price", "Type of sale", "Number of rooms", "Livable surface",
-        "Fully equipped kitchen", "Furnished", "Fireplace", "Terrace",
-        "Garden", "Total land surface", "Number of facades",
+        "Fully equipped kitchen", "Furnished", "Fireplace", "Terrace", "Surface terrace",
+        "Garden", "Garden area", "Total land surface", "Number of facades",
         "Swimming pool", "State of the property"
     ]
 
@@ -25,7 +25,6 @@ class DetailScraper:
         self.max_workers = max_workers
         self.thread_local = threading.local()
 
-    # Thread-safe session
     def _get_session(self):
         if not hasattr(self.thread_local, "session"):
             s = requests.Session()
@@ -33,27 +32,19 @@ class DetailScraper:
             self.thread_local.session = s
         return self.thread_local.session
 
-    def _get_data_row(self, soup, label):
-        h4 = soup.find("h4", string=re.compile(rf"^{re.escape(label)}$", re.I))
-        if h4:
-            p = h4.find_next_sibling("p")
-            if p:
-                return p.get_text(strip=True)
-        return None
-
     def _scrape_single(self, link):
-
+        """Return a dict with details, or None on failure."""
         try:
             session = self._get_session()
             resp = session.get(link, timeout=10)
             resp.raise_for_status()
-        except Exception:
+        except Exception as e:
+            print(f"Request failed for {link}: {e}")
             return None
 
         soup = BeautifulSoup(resp.text, "html.parser")
-        
-        detail = {field: "N/A" for field in self.DETAILS_FIELDS}
 
+        detail = {field: "N/A" for field in self.DETAILS_FIELDS}
         detail["Link"] = link
 
         # Locality (postal code)
@@ -83,7 +74,7 @@ class DetailScraper:
                 ("master house", "14", "2"),
                 ("cottage", "15", "2"),
                 ("bangalow", "16", "2"),
-                ("bungalow", "16", "2"),1
+                ("bungalow", "16", "2"),
                 ("chalet", "17", "2"),
                 ("mansion", "18", "2")
             ]
@@ -164,7 +155,7 @@ class DetailScraper:
         else:
             detail["Furnished"] = "N/A"
 
-        # Open fire
+        # Fireplace
         fire_text = get_data_row("Fireplace")
         if fire_text:
             detail["Fireplace"] = 0 if fire_text.lower() == "no" else 1
@@ -177,6 +168,15 @@ class DetailScraper:
             detail["Terrace"] = 0 if terrace_text.lower() == "no" else 1
         else:
             detail["Terrace"] = "N/A"
+
+        # Terrace area
+        terrace_area_text = get_data_row("Surface terrace")
+        if terrace_area_text:
+            digits = re.sub(r'[^\d]', '', terrace_area_text)
+            terrace_area = int(digits) if digits else None
+        else:
+            terrace_area = None
+        detail["Surface terrace"] = terrace_area if terrace_area is not None else "N/A"
 
         # Garden
         garden_text = get_data_row("Garden")
@@ -219,7 +219,7 @@ class DetailScraper:
                 state_text = p.get_text(strip=True)
 
         state_mapping = {
-             "new": 1,
+            "new": 1,
             "excellent": 2,
             "fully renovated": 3,
             "normal": 4,
@@ -236,29 +236,41 @@ class DetailScraper:
                     break
             detail["State of the property"] = matched_code
         else:
-            detail["State of the property"] = "N/A"     
+            detail["State of the property"] = "N/A"
+
         return detail
 
     def scrape_and_store(self, links, output_file):
-
+        """
+        Scrape details for all links and store them in a CSV file using pandas.
+        """
         if not links:
             print("No links provided.")
             return
 
-        file_exists = os.path.exists(output_file)
+        # Ensure the output directory exists
+        output_dir = os.path.dirname(output_file)
+        if output_dir and not os.path.exists(output_dir):
+            os.makedirs(output_dir, exist_ok=True)
 
-        with open(output_file, "a", newline="", encoding="utf-8") as f:
-            writer = csv.DictWriter(f, fieldnames=self.DETAILS_FIELDS)
-            if not file_exists:
-                writer.writeheader()
+        results = []
+        with ThreadPoolExecutor(max_workers=self.max_workers) as executor:
+            futures = [executor.submit(self._scrape_single, link) for link in links]
 
-            with ThreadPoolExecutor(max_workers=self.max_workers) as executor:
-                futures = [executor.submit(self._scrape_single, link) for link in links]
+            for i, future in enumerate(as_completed(futures), start=1):
+                result = future.result()
+                if result:
+                    results.append(result)
+                if i % 10 == 0:
+                    print(f"{i}/{len(links)} processed")
 
-                for i, future in enumerate(as_completed(futures), start=1):
-                    result = future.result()
-                    if result:
-                        writer.writerow(result)
-
-                    if i % 10 == 0:
-                        print(f"{i}/{len(links)} processed")
+        # Write all results at once with pandas
+        if results:
+            df = pd.DataFrame(results, columns=self.DETAILS_FIELDS)
+            # If file already exists, we may want to append. Here we overwrite.
+            # To append without duplicates, you would need to read existing, combine, deduplicate.
+            # For simplicity, we'll write a new file each time.
+            df.to_csv(output_file, index=False, encoding='utf-8')
+            print(f"Saved {len(results)} records to {output_file}")
+        else:
+            print("No data scraped, file not written.")
